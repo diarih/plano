@@ -1,5 +1,8 @@
 # React + TypeScript + Vite
 
+# GPT
+[GPT Sessions](https://chatgpt.com/share/68f07330-732c-8001-bf97-a3dbad5b9c19)
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
