@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Plano MVP — Drag + Snap + Measure (Width × Height × Depth + Container Depth + Qty Validation)
 // - Drag to move; bottom-right handle to resize (snaps to grid)
@@ -35,6 +35,8 @@ export default function PlanoMVP() {
   const [pxPerCm, setPxPerCm] = useState(DEFAULT_PX_PER_CM);
   const [containerDepth, setContainerDepth] = useState(40); // cm
   const [measureMode, setMeasureMode] = useState(false);
+  const [rowCount, setRowCount] = useState(3);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
 
   const [items, setItems] = useState([
     { id: "A", name: "Box A", x: 60,  y: 60,  w: 160, h: 120, depth: 30, qty: 1, color: "#22d3ee" },
@@ -48,6 +50,76 @@ export default function PlanoMVP() {
   const selected = useMemo(() => items.find((i) => i.id === selectedId) || null, [items, selectedId]);
 
   const depthExceeded = (it) => (it.qty || 0) * (it.depth || 0) > containerDepth;
+
+  useEffect(() => {
+    const measure = () => {
+      if (!stageRef.current) return;
+      const { width, height } = stageRef.current.getBoundingClientRect();
+      setStageSize((prev) => {
+        if (Math.abs(prev.width - width) < 0.5 && Math.abs(prev.height - height) < 0.5) {
+          return prev;
+        }
+        return { width, height };
+      });
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      entries.forEach(({ contentRect }) => {
+        const { width, height } = contentRect;
+        setStageSize((prev) => {
+          if (Math.abs(prev.width - width) < 0.5 && Math.abs(prev.height - height) < 0.5) {
+            return prev;
+          }
+          return { width, height };
+        });
+      });
+    });
+
+    if (stageRef.current) {
+      observer.observe(stageRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, []);
+
+  const alignItemToRows = useCallback(
+    (item, stageHeight) => {
+      if (!stageHeight || rowCount <= 0) return item;
+      const rowHeight = stageHeight / rowCount;
+      const itemBottom = item.y + item.h;
+      const rawRow = Math.ceil(itemBottom / rowHeight) - 1;
+      const rowIndex = Math.max(0, Math.min(rowCount - 1, rawRow));
+      const baseline = Math.min(stageHeight, rowHeight * (rowIndex + 1));
+      const newY = baseline - item.h;
+      if (Math.abs(newY - item.y) < 0.01) {
+        return item;
+      }
+      return { ...item, y: newY };
+    },
+    [rowCount]
+  );
+
+  useEffect(() => {
+    if (!stageSize.height) return;
+    setItems((prev) => {
+      let changed = false;
+      const next = prev.map((it) => {
+        const aligned = alignItemToRows(it, stageSize.height);
+        if (aligned !== it) {
+          changed = true;
+        }
+        return aligned;
+      });
+      return changed ? next : prev;
+    });
+  }, [alignItemToRows, stageSize.height]);
 
   // Mouse handlers on the stage
   const onPointerDown = (e) => {
@@ -106,6 +178,11 @@ export default function PlanoMVP() {
       setMeasure((m) => ({ ...m, w: snap(m.w, gridSize), h: snap(m.h, gridSize), active: false }));
       return;
     }
+    if (drag && stageSize.height) {
+      setItems((prev) =>
+        prev.map((it) => (it.id === drag.id ? alignItemToRows(it, stageSize.height) : it))
+      );
+    }
     setDrag(null);
   };
 
@@ -131,16 +208,24 @@ export default function PlanoMVP() {
   };
 
   // Grid background via CSS gradients
-  const gridBg = useMemo(
-    () => ({
-      backgroundImage: `
-        linear-gradient(to right, rgba(0,0,0,0.08) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px)
-      `,
-      backgroundSize: `${gridSize}px ${gridSize}px`,
-    }),
-    [gridSize]
-  );
+  const stageBackground = useMemo(() => {
+    const images = [
+      `linear-gradient(to right, rgba(0,0,0,0.08) 1px, transparent 1px)`,
+      `linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px)`,
+    ];
+    const sizes = [`${gridSize}px ${gridSize}px`, `${gridSize}px ${gridSize}px`];
+
+    if (rowCount > 0) {
+      images.unshift(`linear-gradient(to bottom, rgba(148,163,184,0.35) 1px, transparent 1px)`);
+      sizes.unshift(`100% ${100 / rowCount}%`);
+    }
+
+    return {
+      backgroundImage: images.join(","),
+      backgroundSize: sizes.join(","),
+      backgroundRepeat: "repeat",
+    };
+  }, [gridSize, rowCount]);
 
   // Update helpers
   const updateDepth = (depth) => {
@@ -156,20 +241,20 @@ export default function PlanoMVP() {
   const addItem = () => {
     const num = items.length + 1;
     const colorPool = ["#22d3ee", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#3b82f6"];
-    setItems((prev) => [
-      ...prev,
-      {
-        id: `N${num}`,
-        name: `Box ${num}`,
-        x: snap(40 + num * 24, gridSize),
-        y: snap(200 + (num % 3) * 24, gridSize),
-        w: snap(120, gridSize),
-        h: snap(80, gridSize),
-        depth: 25,
-        qty: 1,
-        color: colorPool[num % colorPool.length],
-      },
-    ]);
+    const stageHeight = stageRef.current?.getBoundingClientRect().height ?? stageSize.height;
+    const baseItem = {
+      id: `N${num}`,
+      name: `Box ${num}`,
+      x: snap(40 + num * 24, gridSize),
+      y: snap(200 + (num % 3) * 24, gridSize),
+      w: snap(120, gridSize),
+      h: snap(80, gridSize),
+      depth: 25,
+      qty: 1,
+      color: colorPool[num % colorPool.length],
+    };
+    const alignedItem = alignItemToRows(baseItem, stageHeight);
+    setItems((prev) => [...prev, alignedItem]);
     setSelectedId(`N${num}`);
   };
 
@@ -223,6 +308,21 @@ export default function PlanoMVP() {
           />
           cm
         </label>
+        <label className="text-sm flex items-center gap-2">
+          Rows:
+          <input
+            type="number"
+            className="w-16 rounded bg-slate-800 px-2 py-1 border border-slate-700"
+            value={rowCount}
+            min={1}
+            max={12}
+            onChange={(e) =>
+              setRowCount(
+                Math.min(12, Math.max(1, parseInt(e.target.value) || 1))
+              )
+            }
+          />
+        </label>
         <div className="mx-2 h-6 w-px bg-slate-700" />
         <button
           onClick={() => setMeasureMode((v) => !v)}
@@ -263,8 +363,22 @@ export default function PlanoMVP() {
             }}
             onPointerUp={onPointerUp}
             className="relative w-full h-[70vh] rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden"
-            style={gridBg}
+            style={stageBackground}
           >
+            {rowCount > 0 && (
+              <div className="pointer-events-none absolute inset-0">
+                {Array.from({ length: rowCount }).map((_, idx) => (
+                  <div
+                    key={`shelf-row-${idx}`}
+                    className="absolute left-0 right-0 border-t border-slate-800/70"
+                    style={{
+                      top: `${((idx + 1) / rowCount) * 100}%`,
+                      transform: "translateY(-0.5px)",
+                    }}
+                  />
+                ))}
+              </div>
+            )}
             {/* Items */}
             {items.map((it) => (
               <div
@@ -402,7 +516,7 @@ export default function PlanoMVP() {
             <div className="pt-2">
               <div className="text-sm font-semibold mb-2">Export (JSON)</div>
               <pre className="text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 overflow-auto max-h-64 whitespace-pre-wrap">
-                {JSON.stringify({ pxPerCm, gridSize, containerDepth, items }, null, 2)}
+                {JSON.stringify({ pxPerCm, gridSize, containerDepth, rowCount, items }, null, 2)}
               </pre>
             </div>
           </div>
