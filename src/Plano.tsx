@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 
 // Plano MVP — Drag + Snap + Measure (Width × Height × Depth + Container Depth + Qty Validation)
 // - Drag to move; bottom-right handle to resize (snaps to grid)
@@ -11,11 +12,45 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 const GRID_SIZE_DEFAULT = 20; // px
 const DEFAULT_PX_PER_CM = 10; // px per cm
 
-function snap(value, grid) {
+type PlanoItem = {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  depth: number;
+  qty: number;
+  color: string;
+};
+
+type DragState =
+  | {
+      id: string;
+      offsetX: number;
+      offsetY: number;
+      resizing: boolean;
+    }
+  | null;
+
+type MeasureState = {
+  active: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type StageSize = {
+  width: number;
+  height: number;
+};
+
+function snap(value: number, grid: number) {
   return Math.round(value / grid) * grid;
 }
 
-function withinHandle(x, y, item) {
+function withinHandle(x: number, y: number, item: PlanoItem) {
   const handleSize = 14; // px
   return (
     x >= item.x + item.w - handleSize &&
@@ -25,31 +60,37 @@ function withinHandle(x, y, item) {
   );
 }
 
-function cm(px, pxPerCm) {
+function cm(px: number, pxPerCm: number) {
   return (px / pxPerCm).toFixed(1);
 }
 
 export default function PlanoMVP() {
-  const stageRef = useRef(null);
-  const [gridSize, setGridSize] = useState(GRID_SIZE_DEFAULT);
-  const [pxPerCm, setPxPerCm] = useState(DEFAULT_PX_PER_CM);
-  const [containerDepth, setContainerDepth] = useState(40); // cm
-  const [measureMode, setMeasureMode] = useState(false);
-  const [rowCount, setRowCount] = useState(3);
-  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [gridSize, setGridSize] = useState<number>(GRID_SIZE_DEFAULT);
+  const [pxPerCm, setPxPerCm] = useState<number>(DEFAULT_PX_PER_CM);
+  const [containerDepth, setContainerDepth] = useState<number>(40); // cm
+  const [measureMode, setMeasureMode] = useState<boolean>(false);
+  const [rowCount, setRowCount] = useState<number>(3);
+  const [stageSize, setStageSize] = useState<StageSize>({ width: 0, height: 0 });
 
-  const [items, setItems] = useState([
+  const [items, setItems] = useState<PlanoItem[]>([
     { id: "A", name: "Box A", x: 60,  y: 60,  w: 160, h: 120, depth: 30, qty: 1, color: "#22d3ee" },
     { id: "B", name: "Box B", x: 280, y: 60,  w: 120, h: 160, depth: 20, qty: 1, color: "#ef4444" },
   ]);
-  const [selectedId, setSelectedId] = useState("A");
+  const [selectedId, setSelectedId] = useState<string | null>("A");
 
-  const [drag, setDrag] = useState(null); // { id, offsetX, offsetY, resizing }
-  const [measure, setMeasure] = useState({ active: false, x: 0, y: 0, w: 0, h: 0 });
+  const [drag, setDrag] = useState<DragState>(null); // { id, offsetX, offsetY, resizing }
+  const [measure, setMeasure] = useState<MeasureState>({ active: false, x: 0, y: 0, w: 0, h: 0 });
 
-  const selected = useMemo(() => items.find((i) => i.id === selectedId) || null, [items, selectedId]);
+  const selected = useMemo<PlanoItem | null>(
+    () => items.find((i) => i.id === selectedId) || null,
+    [items, selectedId]
+  );
 
-  const depthExceeded = (it) => (it.qty || 0) * (it.depth || 0) > containerDepth;
+  const depthExceeded = useCallback(
+    (it: PlanoItem) => (it.qty || 0) * (it.depth || 0) > containerDepth,
+    [containerDepth]
+  );
 
   useEffect(() => {
     const measure = () => {
@@ -90,14 +131,14 @@ export default function PlanoMVP() {
   }, []);
 
   const alignItemToRows = useCallback(
-    (item, stageHeight) => {
+    (item: PlanoItem, stageHeight?: number) => {
       if (!stageHeight || rowCount <= 0) return item;
       const rowHeight = stageHeight / rowCount;
       const itemBottom = item.y + item.h;
       const rawRow = Math.ceil(itemBottom / rowHeight) - 1;
       const rowIndex = Math.max(0, Math.min(rowCount - 1, rawRow));
       const baseline = Math.min(stageHeight, rowHeight * (rowIndex + 1));
-      const newY = baseline - item.h;
+      const newY = Math.max(0, baseline - item.h);
       if (Math.abs(newY - item.y) < 0.01) {
         return item;
       }
@@ -121,9 +162,30 @@ export default function PlanoMVP() {
     });
   }, [alignItemToRows, stageSize.height]);
 
+  const rowHeightPx = useMemo(
+    () => (rowCount > 0 && stageSize.height ? stageSize.height / rowCount : null),
+    [rowCount, stageSize.height]
+  );
+
+  const isHeightExceeded = useCallback(
+    (item: PlanoItem) => rowHeightPx !== null && item.h > rowHeightPx + 0.01,
+    [rowHeightPx]
+  );
+
+  const heightAlerts = useMemo<PlanoItem[]>(
+    () => (rowHeightPx === null ? [] : items.filter((it) => isHeightExceeded(it))),
+    [isHeightExceeded, items, rowHeightPx]
+  );
+
+  const depthAlerts = useMemo<PlanoItem[]>(
+    () => items.filter((it) => depthExceeded(it)),
+    [depthExceeded, items]
+  );
+
   // Mouse handlers on the stage
-  const onPointerDown = (e) => {
-    const rect = stageRef.current.getBoundingClientRect();
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
@@ -133,7 +195,9 @@ export default function PlanoMVP() {
     }
 
     // Check if clicked on an item (top-most)
-    const topItem = [...items].reverse().find((it) => x >= it.x && x <= it.x + it.w && y >= it.y && y <= it.y + it.h);
+    const topItem = [...items]
+      .reverse()
+      .find((it) => x >= it.x && x <= it.x + it.w && y >= it.y && y <= it.y + it.h);
     if (topItem) {
       setSelectedId(topItem.id);
       const resizing = withinHandle(x, y, topItem);
@@ -143,8 +207,9 @@ export default function PlanoMVP() {
     }
   };
 
-  const onPointerMove = (e) => {
-    const rect = stageRef.current.getBoundingClientRect();
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
@@ -187,23 +252,27 @@ export default function PlanoMVP() {
   };
 
   // Cursor style updates (resize cursor near handle)
-  const onPointerMoveStage = (e) => {
-    const rect = stageRef.current.getBoundingClientRect();
+  const onPointerMoveStage = (e: PointerEvent<HTMLDivElement>) => {
+    const stageEl = stageRef.current;
+    const rect = stageEl?.getBoundingClientRect();
+    if (!rect || !stageEl) return;
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
     if (measureMode) {
-      stageRef.current.style.cursor = "crosshair";
+      stageEl.style.cursor = "crosshair";
       return;
     }
 
-    const topItem = [...items].reverse().find((it) => x >= it.x && x <= it.x + it.w && y >= it.y && y <= it.y + it.h);
+    const topItem = [...items]
+      .reverse()
+      .find((it) => x >= it.x && x <= it.x + it.w && y >= it.y && y <= it.y + it.h);
     if (topItem && withinHandle(x, y, topItem)) {
-      stageRef.current.style.cursor = "nwse-resize";
+      stageEl.style.cursor = "nwse-resize";
     } else if (topItem) {
-      stageRef.current.style.cursor = "grab";
+      stageEl.style.cursor = "grab";
     } else {
-      stageRef.current.style.cursor = "default";
+      stageEl.style.cursor = "default";
     }
   };
 
@@ -228,13 +297,13 @@ export default function PlanoMVP() {
   }, [gridSize, rowCount]);
 
   // Update helpers
-  const updateDepth = (depth) => {
+  const updateDepth = (depth: number) => {
     setItems((prev) => prev.map((it) => (it.id === selectedId ? { ...it, depth } : it)));
   };
-  const updateQty = (qty) => {
+  const updateQty = (qty: number) => {
     setItems((prev) => prev.map((it) => (it.id === selectedId ? { ...it, qty } : it)));
   };
-  const updateName = (name) => {
+  const updateName = (name: string) => {
     setItems((prev) => prev.map((it) => (it.id === selectedId ? { ...it, name } : it)));
   };
 
@@ -380,46 +449,65 @@ export default function PlanoMVP() {
               </div>
             )}
             {/* Items */}
-            {items.map((it) => (
-              <div
-                key={it.id}
-                className={`absolute rounded-xl shadow-md ${
-                  selectedId === it.id
-                    ? "ring-2 ring-cyan-400"
-                    : depthExceeded(it)
-                    ? "ring-2 ring-red-500"
-                    : "ring-1 ring-slate-700"
-                }`}
-                style={{
-                  left: it.x,
-                  top: it.y,
-                  width: it.w,
-                  height: it.h,
-                  backgroundColor: it.color + "22",
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="absolute left-2 top-2 text-[11px] px-2 py-0.5 rounded-full bg-slate-900/70 border border-slate-700">
-                  {it.name}
-                </div>
-                {/* Size pill */}
-                <div className="absolute right-2 bottom-2 text-[11px] px-2 py-0.5 rounded-full bg-slate-900/70 border border-slate-700">
-                  {cm(it.w, pxPerCm)}cm × {cm(it.h, pxPerCm)}cm × {it.depth}cm • qty {it.qty}
-                </div>
-                {/* Error badge if depth exceeded */}
-                {depthExceeded(it) && (
-                  <div className="absolute left-1/2 -translate-x-1/2 -top-5 text-[11px] px-2 py-0.5 rounded bg-red-600 border border-red-400 shadow">
-                    DEPTH EXCEEDED
-                  </div>
-                )}
-                {/* Resize handle */}
-                <div
-                  className="absolute w-3.5 h-3.5 right-0 bottom-0 translate-x-1/2 translate-y-1/2 rounded bg-cyan-400 border border-cyan-300"
-                  style={{ boxShadow: "0 0 0 2px rgba(15,23,42,0.9)" }}
-                />
-              </div>
-            ))}
+            {items.map((it) => {
+              const selectedMatch = selectedId === it.id;
+              const depthError = depthExceeded(it);
+              const heightError = isHeightExceeded(it);
+              const hasAnyError = depthError || heightError;
 
+              const ringClasses = selectedMatch
+                ? hasAnyError
+                  ? "ring-2 ring-red-500 outline outline-2 outline-offset-2 outline-cyan-400"
+                  : "ring-2 ring-cyan-400"
+                : depthError
+                ? "ring-2 ring-red-500"
+                : heightError
+                ? "ring-2 ring-red-400"
+                : "ring-1 ring-slate-700";
+
+              return (
+                <div
+                  key={it.id}
+                  className={`absolute rounded-xl ${ringClasses}`}
+                  style={{
+                    left: it.x,
+                    top: it.y,
+                    width: it.w,
+                    height: it.h,
+                    backgroundColor: `${it.color}22`,
+                    boxShadow: heightError
+                      ? "0 0 0 2px rgba(248,113,113,0.55), 0 0 22px rgba(248,113,113,0.45)"
+                      : "0 10px 15px -3px rgba(15,23,42,0.35), 0 4px 6px -4px rgba(15,23,42,0.45)",
+                  }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <div className="absolute left-2 top-2 text-[11px] px-2 py-0.5 rounded-full bg-slate-900/70 border border-slate-700">
+                    {it.name}
+                  </div>
+                  {/* Size pill */}
+                  <div className="absolute right-2 bottom-2 text-[11px] px-2 py-0.5 rounded-full bg-slate-900/70 border border-slate-700">
+                    {cm(it.w, pxPerCm)}cm x {cm(it.h, pxPerCm)}cm x {it.depth}cm | qty {it.qty}
+                  </div>
+                  {/* Height badge */}
+                  {heightError && (
+                    <div className="absolute left-1/2 -translate-x-1/2 -top-9 text-[11px] px-2 py-0.5 rounded bg-red-500 border border-red-200 shadow">
+                      TOO TALL FOR ROW
+                    </div>
+                  )}
+                  {/* Error badge if depth exceeded */}
+                  {depthError && (
+                    <div className="absolute left-1/2 -translate-x-1/2 -top-5 text-[11px] px-2 py-0.5 rounded bg-red-600 border border-red-400 shadow">
+                      DEPTH EXCEEDED
+                    </div>
+                  )}
+                  {/* Resize handle */}
+                  <div
+                    className="absolute w-3.5 h-3.5 right-0 bottom-0 translate-x-1/2 translate-y-1/2 rounded bg-cyan-400 border border-cyan-300"
+                    style={{ boxShadow: "0 0 0 2px rgba(15,23,42,0.9)" }}
+                  />
+                </div>
+              );
+            })}
             {/* Measurement overlay */}
             {(measure.active || (measure.w !== 0 && measure.h !== 0)) && (
               <div
@@ -432,7 +520,7 @@ export default function PlanoMVP() {
                 }}
               >
                 <div className="absolute -top-6 left-0 text-xs px-2 py-0.5 rounded bg-slate-900/90 border border-slate-700">
-                  {cm(Math.abs(measure.w), pxPerCm)}cm × {cm(Math.abs(measure.h), pxPerCm)}cm
+                  {cm(Math.abs(measure.w), pxPerCm)}cm x {cm(Math.abs(measure.h), pxPerCm)}cm
                 </div>
               </div>
             )}
@@ -513,6 +601,42 @@ export default function PlanoMVP() {
               )}
             </div>
 
+            {(heightAlerts.length > 0 || depthAlerts.length > 0) && (
+              <div className="pt-2 space-y-3">
+                <div className="text-sm font-semibold">Error Logs</div>
+                <div className="space-y-3 text-xs">
+                  {heightAlerts.length > 0 && (
+                    <div className="rounded-xl border border-red-500/40 bg-red-950/40 px-3 py-2">
+                      <div className="font-semibold text-red-200">Height</div>
+                      <div className="mt-1 space-y-1">
+                        {heightAlerts.map((it) => (
+                          <div key={`height-${it.id}`}>
+                            <span className="font-semibold">{it.name}</span> is {cm(it.h, pxPerCm)}cm tall
+                            {rowHeightPx !== null
+                              ? ` (row limit ${cm(rowHeightPx, pxPerCm)}cm)`
+                              : ""}. Adjust size or row configuration.
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {depthAlerts.length > 0 && (
+                    <div className="rounded-xl border border-red-500/40 bg-red-950/30 px-3 py-2">
+                      <div className="font-semibold text-red-200">Depth</div>
+                      <div className="mt-1 space-y-1">
+                        {depthAlerts.map((it) => (
+                          <div key={`depth-${it.id}`}>
+                            <span className="font-semibold">{it.name}</span> total depth{" "}
+                            {(it.qty || 0) * (it.depth || 0)}cm exceeds container limit {containerDepth}cm.
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="pt-2">
               <div className="text-sm font-semibold mb-2">Export (JSON)</div>
               <pre className="text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 overflow-auto max-h-64 whitespace-pre-wrap">
@@ -524,10 +648,20 @@ export default function PlanoMVP() {
       </div>
 
       {/* Global validation banner */}
-      {items.some((it) => depthExceeded(it)) && (
+      {(heightAlerts.length > 0 || depthAlerts.length > 0) && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-xl bg-red-600/90 border border-red-300 shadow">
-          <span className="font-semibold">Depth errors:</span>{" "}
-          {items.filter((it) => depthExceeded(it)).map((it) => it.name).join(", ")}
+          {heightAlerts.length > 0 && (
+            <div>
+              <span className="font-semibold">Height issues:</span>{" "}
+              {heightAlerts.map((it) => it.name).join(", ")}
+            </div>
+          )}
+          {depthAlerts.length > 0 && (
+            <div>
+              <span className="font-semibold">Depth issues:</span>{" "}
+              {depthAlerts.map((it) => it.name).join(", ")}
+            </div>
+          )}
         </div>
       )}
     </div>
